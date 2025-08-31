@@ -23,6 +23,19 @@ class ModuleLoader {
     
     private function setupBuiltinModules() {
         // 设置内置模块，可以映射到Haxe的类和函数
+        haxeModules.set("Math", {
+            "pi": Math.PI,
+            "sqrt": Math.sqrt,
+            "pow": Math.pow,
+            "sin": Math.sin,
+            "cos": Math.cos,
+            "tan": Math.tan,
+            "floor": Math.floor,
+            "ceil": Math.ceil,
+            "abs": Math.abs,
+            "random": Math.random
+        });
+        
         haxeModules.set("math", {
             "pi": Math.PI,
             "sqrt": Math.sqrt,
@@ -36,27 +49,14 @@ class ModuleLoader {
             "random": Math.random
         });
         
-        haxeModules.set("sys", {
+        haxeModules.set("Sys", {
             "platform": Sys.systemName,
             "exit": Sys.exit
         });
         
-        // 添加更多Haxe标准库模块
-        haxeModules.set("String", {
-            "charAt": function(s:String, i:Int) { return s.charAt(i); },
-            "charCodeAt": function(s:String, i:Int) { return s.charCodeAt(i); },
-            "indexOf": function(s:String, sub:String) { return s.indexOf(sub); },
-            "split": function(s:String, delim:String) { return s.split(delim); },
-            "toLowerCase": function(s:String) { return s.toLowerCase(); },
-            "toUpperCase": function(s:String) { return s.toUpperCase(); }
-        });
-        
-        haxeModules.set("Array", {
-            "concat": function(a:Array<Dynamic>, b:Array<Dynamic>) { return a.concat(b); },
-            "join": function(a:Array<Dynamic>, sep:String) { return a.join(sep); },
-            "pop": function(a:Array<Dynamic>) { return a.pop(); },
-            "push": function(a:Array<Dynamic>, x:Dynamic) { a.push(x); return a.length; },
-            "reverse": function(a:Array<Dynamic>) { a.reverse(); return a; }
+        haxeModules.set("sys", {
+            "platform": Sys.systemName,
+            "exit": Sys.exit
         });
     }
     
@@ -95,21 +95,6 @@ class ModuleLoader {
                     // 缓存这个类包装器
                     haxeModules.set(moduleName, classWrapper);
                     return classWrapper;
-                }
-                
-                // 尝试作为枚举加载
-                var haxeEnum = Type.resolveEnum(moduleName);
-                if (haxeEnum != null) {
-                    var moduleObj = {};
-                    
-                    // 获取所有枚举构造函数
-                    var constructors = Type.getEnumConstructs(haxeEnum);
-                    for (ctor in constructors) {
-                        Reflect.setField(moduleObj, ctor, Reflect.field(haxeEnum, ctor));
-                    }
-                    
-                    haxeModules.set(moduleName, moduleObj);
-                    return moduleObj;
                 }
                 
                 trace("Warning: Could not load Haxe module " + moduleName + ", using empty module");
@@ -460,7 +445,7 @@ class Interpreter {
                 return null;
                 
             case ImportStatement:
-                // import module [as alias]
+                // import module [as alias] - 使用智能检测
                 var module = moduleLoader.loadModule(node.module);
                 var varName = node.alias != null ? node.alias : node.module;
                 setVariable(varName, module);
