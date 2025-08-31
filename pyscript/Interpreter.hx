@@ -42,59 +42,62 @@ class ModuleLoader {
         });
         
         // 添加更多Haxe标准库模块
-        var stringModule = new Map<String, Dynamic>();
-        stringModule.set("charAt", function(s, i) { return s.charAt(i); });
-        stringModule.set("charCodeAt", function(s, i) { return s.charCodeAt(i); });
-        stringModule.set("indexOf", function(s, sub) { return s.indexOf(sub); });
-        stringModule.set("lastIndexOf", function(s, sub) { return s.lastIndexOf(sub); });
-        stringModule.set("split", function(s, delim) { return s.split(delim); });
-        stringModule.set("substr", function(s, pos, len) { return s.substr(pos, len); });
-        stringModule.set("substring", function(s, start, end) { return s.substring(start, end); });
-        stringModule.set("toLowerCase", function(s) { return s.toLowerCase(); });
-        stringModule.set("toUpperCase", function(s) { return s.toUpperCase(); });
-        stringModule.set("trim", function(s) { return s.trim(); });
-        haxeModules.set("string", stringModule);
+        haxeModules.set("String", {
+            "charAt": function(s:String, i:Int) { return s.charAt(i); },
+            "charCodeAt": function(s:String, i:Int) { return s.charCodeAt(i); },
+            "indexOf": function(s:String, sub:String) { return s.indexOf(sub); },
+            "split": function(s:String, delim:String) { return s.split(delim); },
+            "toLowerCase": function(s:String) { return s.toLowerCase(); },
+            "toUpperCase": function(s:String) { return s.toUpperCase(); }
+        });
         
-        var arrayModule = new Map<String, Dynamic>();
-        arrayModule.set("concat", function(a, b) { return a.concat(b); });
-        arrayModule.set("join", function(a, sep) { return a.join(sep); });
-        arrayModule.set("pop", function(a) { return a.pop(); });
-        arrayModule.set("push", function(a, x) { a.push(x); return a.length; });
-        arrayModule.set("reverse", function(a) { a.reverse(); return a; });
-        arrayModule.set("shift", function(a) { return a.shift(); });
-        arrayModule.set("slice", function(a, pos, end) { return a.slice(pos, end); });
-        arrayModule.set("sort", function(a, f) { a.sort(f); return a; });
-        arrayModule.set("splice", function(a, pos, len) { return a.splice(pos, len); });
-        arrayModule.set("unshift", function(a, x) { a.unshift(x); return a.length; });
-        haxeModules.set("array", arrayModule);
+        haxeModules.set("Array", {
+            "concat": function(a:Array<Dynamic>, b:Array<Dynamic>) { return a.concat(b); },
+            "join": function(a:Array<Dynamic>, sep:String) { return a.join(sep); },
+            "pop": function(a:Array<Dynamic>) { return a.pop(); },
+            "push": function(a:Array<Dynamic>, x:Dynamic) { a.push(x); return a.length; },
+            "reverse": function(a:Array<Dynamic>) { a.reverse(); return a; }
+        });
     }
     
-    public function loadModule(moduleName:String, isHaxeModule:Bool = false):Dynamic {
+    public function loadModule(moduleName:String, ?isHaxeModule:Bool = false):Dynamic {
         // 首先检查是否是内置模块
         if (haxeModules.exists(moduleName)) {
             return haxeModules.get(moduleName);
         }
         
-        if (isHaxeModule) {
-            // 尝试加载Haxe模块
+        // 智能检测：如果模块名以大写字母开头，或者包含大写字母的路径部分，则认为是Haxe模块
+        var parts = moduleName.split(".");
+        var lastPart = parts[parts.length - 1];
+        var isHaxe = isHaxeModule || (lastPart.charAt(0) >= 'A' && lastPart.charAt(0) <= 'Z');
+        
+        if (isHaxe) {
+            // 尝试加载Haxe类
             try {
-                // 使用Type.resolveClass尝试获取Haxe类
                 var haxeClass = Type.resolveClass(moduleName);
                 if (haxeClass != null) {
-                    // 如果是类，返回类的静态方法和属性
-                    var moduleObj = {};
+                    // 创建一个通用的类包装器
+                    var classWrapper = {
+                        "__constructor__": function(...args:Array<Dynamic>) {
+                            // 使用Type.createInstance创建实例
+                            return Type.createInstance(haxeClass, args);
+                        },
+                        "__haxeClass__": haxeClass
+                    };
                     
-                    // 获取所有静态字段
-                    var fields = Type.getClassFields(haxeClass);
-                    for (field in fields) {
+                    // 添加静态方法和属性
+                    var statics = Type.getClassFields(haxeClass);
+                    for (field in statics) {
                         var value = Reflect.field(haxeClass, field);
-                        Reflect.setField(moduleObj, field, value);
+                        Reflect.setField(classWrapper, field, value);
                     }
                     
-                    return moduleObj;
+                    // 缓存这个类包装器
+                    haxeModules.set(moduleName, classWrapper);
+                    return classWrapper;
                 }
                 
-                // 尝试获取Haxe枚举
+                // 尝试作为枚举加载
                 var haxeEnum = Type.resolveEnum(moduleName);
                 if (haxeEnum != null) {
                     var moduleObj = {};
@@ -105,6 +108,7 @@ class ModuleLoader {
                         Reflect.setField(moduleObj, ctor, Reflect.field(haxeEnum, ctor));
                     }
                     
+                    haxeModules.set(moduleName, moduleObj);
                     return moduleObj;
                 }
                 
@@ -130,13 +134,11 @@ class ModuleLoader {
                 var funcs = interpreter.getFunctions();
                 for (funcName in funcs.keys()) {
                     var pythonFunc = funcs.get(funcName);
-                    // 直接存储PythonFunction对象，在callMethod中特殊处理
                     Reflect.setField(moduleObj, funcName, pythonFunc);
                 }
                 
                 return moduleObj;
             } catch (e:Dynamic) {
-                // 如果文件加载失败，返回空对象而不是抛出异常
                 trace("Warning: Could not load Python module " + moduleName + ", using empty module");
                 return {};
             }
@@ -160,8 +162,6 @@ class PythonFunction {
     }
     
     public function call(args:Array<Dynamic>):Dynamic {
-        // trace("PythonFunction.call: starting " + name + " with args " + args);
-        
         // 如果这是一个类构造函数
         if (isClass && classObj != null) {
             // 创建类实例
@@ -211,14 +211,11 @@ class PythonFunction {
         
         var result:Dynamic = null;
         try {
-            // trace("PythonFunction.call: evaluating body");
             result = interpreter.evaluate(body);
-            // trace("PythonFunction.call: body evaluation completed, result = " + result);
         } catch (e:Dynamic) {
             if (Std.isOfType(e, ReturnException)) {
                 var retEx:ReturnException = cast e;
                 result = retEx.value;
-                // trace("PythonFunction.call: caught ReturnException with value " + result);
             } else {
                 interpreter.popScope();
                 throw e;
@@ -226,8 +223,6 @@ class PythonFunction {
         }
         
         interpreter.popScope();
-        // trace("PythonFunction.call: returning " + result);
-        
         return result;
     }
 }
@@ -235,9 +230,9 @@ class PythonFunction {
 class Interpreter {
     private var variables:Array<Map<String, Dynamic>>;
     private var functions:Map<String, PythonFunction>;
-    private var globalVars:Map<String, Bool>; // 跟踪哪些变量被声明为全局变量
-    private var modules:Map<String, Dynamic>; // 已导入的模块
-    private var moduleLoader:ModuleLoader; // 模块加载器
+    private var globalVars:Map<String, Bool>;
+    private var modules:Map<String, Dynamic>;
+    private var moduleLoader:ModuleLoader;
     
     // Parent object support (similar to LScript)
     private var _parent:Dynamic;
@@ -250,6 +245,11 @@ class Interpreter {
         modules = new Map<String, Dynamic>();
         moduleLoader = new ModuleLoader();
         _parent = parent;
+        
+        // 设置parent变量
+        if (_parent != null) {
+            setVariable("parent", _parent);
+        }
     }
     
     inline function get_parent():Dynamic {
@@ -257,7 +257,11 @@ class Interpreter {
     }
     
     inline function set_parent(newParent:Dynamic):Dynamic {
-        return _parent = newParent;
+        _parent = newParent;
+        if (_parent != null) {
+            setVariable("parent", _parent);
+        }
+        return _parent;
     }
     
     public function run(code:String):Dynamic {
@@ -308,8 +312,6 @@ class Interpreter {
     public function evaluate(node:ASTNode):Dynamic {
         if (node == null) return null;
         
-        // trace("Evaluating node: " + node.type + " with value: " + node.value);
-        
         switch (node.type) {
             case Literal:
                 return node.value;
@@ -327,10 +329,8 @@ class Interpreter {
                 return evaluateUnaryOp(node.op, operand);
                 
             case Assignment:
-                // trace("Processing assignment: " + node.name + " = " + node.value);
                 var value = evaluate(node.value);
                 setVariable(node.name, value);
-                // trace("Set variable " + node.name + " to " + value);
                 return value;
                 
             case PropertyAssignment:
@@ -359,7 +359,6 @@ class Interpreter {
                 return getIndexedValue(obj, index);
                 
             case FunctionDef:
-                // trace("Defining function: " + node.name);
                 var func = new PythonFunction(node.name, node.parameters, node.body, this);
                 functions.set(node.name, func);
                 return null;
@@ -400,18 +399,6 @@ class Interpreter {
                 functions.set(node.name, constructor);
                 
                 return classObj;
-                
-                // 将类体中定义的函数作为方法添加到类中
-                for (funcName in functions.keys()) {
-                    var func = functions.get(funcName);
-                    Reflect.setField(classObj, funcName, func);
-                }
-                
-                popScope();
-                
-                // 将类设置为变量
-                setVariable(node.name, classObj);
-                return null;
                 
             case IfStatement:
                 if (isTruthy(evaluate(node.condition))) {
@@ -459,12 +446,10 @@ class Interpreter {
                 if (node.value != null) {
                     value = evaluate(node.value);
                 }
-                // trace("ReturnStatement: throwing ReturnException with value " + value);
                 throw new ReturnException(value);
                 
             case GlobalStatement:
                 // Global语句在Python中用于声明全局变量
-                // 标记这些变量为全局变量，以便在赋值时正确处理
                 for (name in node.names) {
                     globalVars.set(name, true);
                     // 如果全局作用域中不存在该变量，初始化为null
@@ -534,7 +519,7 @@ class Interpreter {
             case "/": return left / right;
             case "%": return left % right;
             case "**": return Math.pow(left, right);
-            case "//": return Math.floor(left / right); // 整除运算符
+            case "//": return Math.floor(left / right);
             case "==": return left == right;
             case "!=": return left != right;
             case "<": return left < right;
@@ -551,7 +536,7 @@ class Interpreter {
         switch (op) {
             case "not": return !isTruthy(operand);
             case "-": return -operand;
-            case "+": return operand;  // 一元加号，直接返回操作数
+            case "+": return operand;
             default: throw "Unknown unary operator: " + op;
         }
     }
@@ -591,7 +576,6 @@ class Interpreter {
                 try {
                     var func = getVariable(name);
                     if (Std.isOfType(func, PythonFunction)) {
-                        // 如果是PythonFunction，直接调用
                         var pythonFunc:PythonFunction = cast func;
                         var evaluatedArgs = [];
                         for (arg in args) {
@@ -604,12 +588,20 @@ class Interpreter {
                             evaluatedArgs.push(evaluate(arg));
                         }
                         return Reflect.callMethod(null, func, evaluatedArgs);
+                    } else if (Reflect.hasField(func, "__constructor__")) {
+                        // 这是一个Haxe类模块，调用构造函数
+                        var constructor = Reflect.field(func, "__constructor__");
+                        var evaluatedArgs = [];
+                        for (arg in args) {
+                            evaluatedArgs.push(evaluate(arg));
+                        }
+                        return Reflect.callMethod(null, constructor, evaluatedArgs);
                     }
                 } catch (e:Dynamic) {
-                    // 变量不存在，继续抛出未知函数错误
+                    // 变量不存在，继续处理内置函数
                 }
                 
-                // 检查Python内置函数
+                // Python内置函数
                 var evaluatedArgs = [];
                 for (arg in args) {
                     evaluatedArgs.push(evaluate(arg));
@@ -632,36 +624,20 @@ class Interpreter {
                             }
                         }
                         return 0;
-                    case "len":
-                        if (evaluatedArgs.length > 0) {
-                            var val = evaluatedArgs[0];
-                            if (Std.isOfType(val, Array)) {
-                                var arr:Array<Dynamic> = cast val;
-                                return arr.length;
-                            }
-                            if (Std.isOfType(val, String)) {
-                                var str:String = cast val;
-                                return str.length;
-                            }
-                        }
-                        return 0;
                     case "range":
                         var result = [];
                         if (evaluatedArgs.length == 1) {
-                            // range(stop)
                             var end = Std.int(Std.parseFloat(Std.string(evaluatedArgs[0])));
                             for (i in 0...end) {
                                 result.push(i);
                             }
                         } else if (evaluatedArgs.length == 2) {
-                            // range(start, stop)
                             var start = Std.int(Std.parseFloat(Std.string(evaluatedArgs[0])));
                             var end = Std.int(Std.parseFloat(Std.string(evaluatedArgs[1])));
                             for (i in start...end) {
                                 result.push(i);
                             }
                         } else if (evaluatedArgs.length == 3) {
-                            // range(start, stop, step)
                             var start = Std.int(Std.parseFloat(Std.string(evaluatedArgs[0])));
                             var end = Std.int(Std.parseFloat(Std.string(evaluatedArgs[1])));
                             var step = Std.int(Std.parseFloat(Std.string(evaluatedArgs[2])));
@@ -680,7 +656,7 @@ class Interpreter {
                                 var i = start;
                                 while (i > end) {
                                     result.push(i);
-                                    i += step; // step is negative
+                                    i += step;
                                 }
                             }
                         }
@@ -765,7 +741,6 @@ class Interpreter {
         if (Reflect.hasField(obj, methodName)) {
             var method = Reflect.field(obj, methodName);
             if (Std.isOfType(method, PythonFunction)) {
-                // 如果是PythonFunction，直接调用
                 var pythonFunc:PythonFunction = cast method;
                 return pythonFunc.call(argValues);
             } else if (Reflect.isFunction(method)) {
@@ -827,11 +802,9 @@ class Interpreter {
             var arr:Array<Dynamic> = cast obj;
             var idx:Int = 0;
             
-            // 简单的索引转换
             if (Std.isOfType(index, Int)) {
                 idx = cast(index, Int);
             } else {
-                // 尝试转换为整数
                 try {
                     idx = Std.parseInt(Std.string(index));
                     if (idx == null) idx = 0;
@@ -846,15 +819,12 @@ class Interpreter {
             return null;
         }
         
-        // 对于Map字典
-        // 对于Map字典
         if (Std.isOfType(obj, haxe.ds.StringMap)) {
             var map:haxe.ds.StringMap<Dynamic> = cast obj;
             var key = Std.string(index);
             return map.get(key);
         }
         
-        // 对于字典/对象，使用反射
         if (obj != null) {
             var key = Std.string(index);
             return Reflect.field(obj, key);
