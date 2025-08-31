@@ -33,6 +33,9 @@ class Parser {
         if (match(TokenType.DEF)) {
             return functionStatement();
         }
+        if (match(TokenType.CLASS)) {
+            return classStatement();
+        }
         if (match(TokenType.RETURN)) {
             return returnStatement();
         }
@@ -58,6 +61,47 @@ class Parser {
         return expressionStatement();
     }
     
+    
+    private function classStatement():ASTNode {
+        var name = consume(TokenType.IDENTIFIER, "Expected class name").value;
+        
+        // 可选的父类
+        var superclass = null;
+        if (match(TokenType.LPAREN)) {
+            superclass = consume(TokenType.IDENTIFIER, "Expected superclass name").value;
+            consume(TokenType.RPAREN, "Expected ')' after superclass");
+        }
+        
+        consume(TokenType.COLON, "Expected ':' after class declaration");
+        
+        // 跳过换行符
+        while (match(TokenType.NEWLINE)) {}
+        
+        // 解析类体 - 解析多个语句
+        var statements = [];
+        
+        // 简单的方法：继续解析def语句直到不是def为止
+        while (check(TokenType.DEF)) {
+            var stmt = statement();
+            if (stmt != null) {
+                statements.push(stmt);
+            }
+            // 跳过换行符
+            while (match(TokenType.NEWLINE)) {}
+        }
+        
+        // 创建类体块
+        var body = new ASTNode(NodeType.Block);
+        body.statements = statements;
+        
+        var node = new ASTNode(NodeType.ClassDef);
+        node.name = name;
+        node.superclass = superclass;
+        node.body = body;
+        
+        return node;
+    }
+    
     private function functionStatement():ASTNode {
         var name = consume(TokenType.IDENTIFIER, "Expected function name").value;
         
@@ -80,8 +124,9 @@ class Parser {
         // 解析函数体 - 支持多个语句
         var statements = [];
         
-        // 解析函数体中的所有语句，直到遇到下一个函数定义或文件结束
-        while (!isAtEnd() && !check(TokenType.DEF)) {
+        // 继续解析语句直到遇到下一个def、class或文件结束
+        while (!isAtEnd() && !check(TokenType.DEF) && !check(TokenType.CLASS)) {
+            // 跳过空行
             if (match(TokenType.NEWLINE)) {
                 continue;
             }
@@ -91,8 +136,8 @@ class Parser {
                 statements.push(stmt);
             }
             
-            // 如果遇到独立的return语句（不是if语句的一部分），函数体结束
-            if (stmt != null && stmt.type == NodeType.ReturnStatement) {
+            // 如果下一个token是同级别的def或class，停止解析
+            if (check(TokenType.DEF) || check(TokenType.CLASS)) {
                 break;
             }
         }
@@ -135,16 +180,38 @@ class Parser {
     }
     
     private function importStatement():ASTNode {
+        // 解析模块名，支持点号分隔的路径（如 haxe.Math）
         var module = consume(TokenType.IDENTIFIER, "Expected module name after 'import'").value;
-        var alias = null;
         
+        // 继续解析点号分隔的路径
+        while (match(TokenType.DOT)) {
+            var nextPart = consume(TokenType.IDENTIFIER, "Expected identifier after '.'").value;
+            module += "." + nextPart;
+        }
+        
+        var alias = null;
         if (match(TokenType.AS)) {
             alias = consume(TokenType.IDENTIFIER, "Expected alias name after 'as'").value;
         }
         
-        var node = new ASTNode(NodeType.ImportStatement);
+        // 检查是否是Haxe模块
+        // 1. 首字母大写的模块名（Math, Sys, String等）
+        // 2. 包含点号的路径，且最后一部分首字母大写（haxe.Math, sys.FileSystem等）
+        var isHaxeModule = false;
+        if (module.indexOf('.', 0) >= 0) {
+            // 有路径的情况，检查最后一部分
+            var parts = module.split('.');
+            var lastPart = parts[parts.length - 1];
+            isHaxeModule = lastPart.charAt(0) >= 'A' && lastPart.charAt(0) <= 'Z';
+        } else {
+            // 无路径的情况，检查整个模块名
+            isHaxeModule = module.charAt(0) >= 'A' && module.charAt(0) <= 'Z';
+        }
+        
+        var node = new ASTNode(isHaxeModule ? NodeType.HaxeImportStatement : NodeType.ImportStatement);
         node.module = module;
         node.alias = alias;
+        node.statements = []; // 初始化statements数组
         
         return node;
     }
@@ -198,6 +265,13 @@ class Parser {
             if (expr.type == NodeType.Identifier) {
                 var node = new ASTNode(NodeType.Assignment);
                 node.name = expr.name;
+                node.value = value;
+                return node;
+            } else if (expr.type == NodeType.PropertyAccess) {
+                // 属性赋值：obj.attr = value
+                var node = new ASTNode(NodeType.PropertyAssignment);
+                node.object = expr.object;
+                node.property = expr.property;
                 node.value = value;
                 return node;
             }

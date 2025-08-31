@@ -40,38 +40,106 @@ class ModuleLoader {
             "platform": Sys.systemName,
             "exit": Sys.exit
         });
+        
+        // 添加更多Haxe标准库模块
+        var stringModule = new Map<String, Dynamic>();
+        stringModule.set("charAt", function(s, i) { return s.charAt(i); });
+        stringModule.set("charCodeAt", function(s, i) { return s.charCodeAt(i); });
+        stringModule.set("indexOf", function(s, sub) { return s.indexOf(sub); });
+        stringModule.set("lastIndexOf", function(s, sub) { return s.lastIndexOf(sub); });
+        stringModule.set("split", function(s, delim) { return s.split(delim); });
+        stringModule.set("substr", function(s, pos, len) { return s.substr(pos, len); });
+        stringModule.set("substring", function(s, start, end) { return s.substring(start, end); });
+        stringModule.set("toLowerCase", function(s) { return s.toLowerCase(); });
+        stringModule.set("toUpperCase", function(s) { return s.toUpperCase(); });
+        stringModule.set("trim", function(s) { return s.trim(); });
+        haxeModules.set("string", stringModule);
+        
+        var arrayModule = new Map<String, Dynamic>();
+        arrayModule.set("concat", function(a, b) { return a.concat(b); });
+        arrayModule.set("join", function(a, sep) { return a.join(sep); });
+        arrayModule.set("pop", function(a) { return a.pop(); });
+        arrayModule.set("push", function(a, x) { a.push(x); return a.length; });
+        arrayModule.set("reverse", function(a) { a.reverse(); return a; });
+        arrayModule.set("shift", function(a) { return a.shift(); });
+        arrayModule.set("slice", function(a, pos, end) { return a.slice(pos, end); });
+        arrayModule.set("sort", function(a, f) { a.sort(f); return a; });
+        arrayModule.set("splice", function(a, pos, len) { return a.splice(pos, len); });
+        arrayModule.set("unshift", function(a, x) { a.unshift(x); return a.length; });
+        haxeModules.set("array", arrayModule);
     }
     
-    public function loadModule(moduleName:String):Dynamic {
+    public function loadModule(moduleName:String, isHaxeModule:Bool = false):Dynamic {
         // 首先检查是否是内置模块
         if (haxeModules.exists(moduleName)) {
             return haxeModules.get(moduleName);
         }
         
-        // 尝试加载Python文件
-        try {
-            var pythonCode = sys.io.File.getContent(moduleName + ".py");
-            var interpreter = new Interpreter();
-            interpreter.run(pythonCode);
-            
-            // 返回模块的全局变量和函数
-            var moduleObj = {};
-            var globalScope = interpreter.getGlobalScope();
-            for (key in globalScope.keys()) {
-                Reflect.setField(moduleObj, key, globalScope.get(key));
+        if (isHaxeModule) {
+            // 尝试加载Haxe模块
+            try {
+                // 使用Type.resolveClass尝试获取Haxe类
+                var haxeClass = Type.resolveClass(moduleName);
+                if (haxeClass != null) {
+                    // 如果是类，返回类的静态方法和属性
+                    var moduleObj = {};
+                    
+                    // 获取所有静态字段
+                    var fields = Type.getClassFields(haxeClass);
+                    for (field in fields) {
+                        var value = Reflect.field(haxeClass, field);
+                        Reflect.setField(moduleObj, field, value);
+                    }
+                    
+                    return moduleObj;
+                }
+                
+                // 尝试获取Haxe枚举
+                var haxeEnum = Type.resolveEnum(moduleName);
+                if (haxeEnum != null) {
+                    var moduleObj = {};
+                    
+                    // 获取所有枚举构造函数
+                    var constructors = Type.getEnumConstructs(haxeEnum);
+                    for (ctor in constructors) {
+                        Reflect.setField(moduleObj, ctor, Reflect.field(haxeEnum, ctor));
+                    }
+                    
+                    return moduleObj;
+                }
+                
+                trace("Warning: Could not load Haxe module " + moduleName + ", using empty module");
+                return {};
+            } catch (e:Dynamic) {
+                trace("Error loading Haxe module " + moduleName + ": " + e);
+                return {};
             }
-            var funcs = interpreter.getFunctions();
-            for (funcName in funcs.keys()) {
-                var pythonFunc = funcs.get(funcName);
-                // 直接存储PythonFunction对象，在callMethod中特殊处理
-                Reflect.setField(moduleObj, funcName, pythonFunc);
+        } else {
+            // 尝试加载Python文件
+            try {
+                var pythonCode = sys.io.File.getContent(moduleName + ".py");
+                var interpreter = new Interpreter();
+                interpreter.run(pythonCode);
+                
+                // 返回模块的全局变量和函数
+                var moduleObj = {};
+                var globalScope = interpreter.getGlobalScope();
+                for (key in globalScope.keys()) {
+                    Reflect.setField(moduleObj, key, globalScope.get(key));
+                }
+                var funcs = interpreter.getFunctions();
+                for (funcName in funcs.keys()) {
+                    var pythonFunc = funcs.get(funcName);
+                    // 直接存储PythonFunction对象，在callMethod中特殊处理
+                    Reflect.setField(moduleObj, funcName, pythonFunc);
+                }
+                
+                return moduleObj;
+            } catch (e:Dynamic) {
+                // 如果文件加载失败，返回空对象而不是抛出异常
+                trace("Warning: Could not load Python module " + moduleName + ", using empty module");
+                return {};
             }
-            
-            return moduleObj;
-        } catch (e:Dynamic) {
-            // 如果文件加载失败，返回空对象而不是抛出异常
-            trace("Warning: Could not load module " + moduleName + ", using empty module");
-            return {};
         }
     }
 }
@@ -81,6 +149,8 @@ class PythonFunction {
     public var parameters:Array<String>;
     public var body:ASTNode;
     public var interpreter:Interpreter;
+    public var isClass:Bool = false;
+    public var classObj:Dynamic = null;
     
     public function new(name:String, parameters:Array<String>, body:ASTNode, interpreter:Interpreter) {
         this.name = name;
@@ -91,15 +161,52 @@ class PythonFunction {
     
     public function call(args:Array<Dynamic>):Dynamic {
         // trace("PythonFunction.call: starting " + name + " with args " + args);
-        if (args.length != parameters.length) {
-            throw "Function " + name + " expects " + parameters.length + " arguments, got " + args.length;
+        
+        // 如果这是一个类构造函数
+        if (isClass && classObj != null) {
+            // 创建类实例
+            var instance = {
+                "__class__": classObj,
+                "__methods__": new Map<String, Dynamic>()
+            };
+            
+            // 复制类的方法到实例
+            if (classObj.__methods__ != null) {
+                var classMethods:Map<String, Dynamic> = classObj.__methods__;
+                for (methodName in classMethods.keys()) {
+                    instance.__methods__.set(methodName, classMethods.get(methodName));
+                }
+            }
+            
+            // 如果有__init__方法，调用它
+            var instanceMethods:Map<String, Dynamic> = instance.__methods__;
+            if (instanceMethods.exists("__init__")) {
+                var initMethod = instanceMethods.get("__init__");
+                if (Std.isOfType(initMethod, PythonFunction)) {
+                    var initFunc:PythonFunction = cast initMethod;
+                    // 调用__init__方法，传递self和构造函数参数
+                    var initArgs:Array<Dynamic> = [instance];
+                    for (arg in args) {
+                        initArgs.push(arg);
+                    }
+                    initFunc.call(initArgs);
+                }
+            }
+            
+            return instance;
         }
         
         interpreter.pushScope();
         
-        for (i in 0...parameters.length) {
+        // 绑定参数，允许参数数量不完全匹配（用于方法调用时的self参数）
+        var minLength = parameters.length < args.length ? parameters.length : args.length;
+        for (i in 0...minLength) {
             interpreter.setVariable(parameters[i], args[i]);
-            // trace("PythonFunction.call: set param " + parameters[i] + " = " + args[i]);
+        }
+        
+        // 如果参数不足，设置为null
+        for (i in minLength...parameters.length) {
+            interpreter.setVariable(parameters[i], null);
         }
         
         var result:Dynamic = null;
@@ -132,12 +239,25 @@ class Interpreter {
     private var modules:Map<String, Dynamic>; // 已导入的模块
     private var moduleLoader:ModuleLoader; // 模块加载器
     
-    public function new() {
+    // Parent object support (similar to LScript)
+    private var _parent:Dynamic;
+    public var parent(get, set):Dynamic;
+    
+    public function new(?parent:Dynamic) {
         variables = [new Map<String, Dynamic>()];
         functions = new Map<String, PythonFunction>();
         globalVars = new Map<String, Bool>();
         modules = new Map<String, Dynamic>();
         moduleLoader = new ModuleLoader();
+        _parent = parent;
+    }
+    
+    inline function get_parent():Dynamic {
+        return _parent;
+    }
+    
+    inline function set_parent(newParent:Dynamic):Dynamic {
+        return _parent = newParent;
     }
     
     public function run(code:String):Dynamic {
@@ -213,6 +333,12 @@ class Interpreter {
                 // trace("Set variable " + node.name + " to " + value);
                 return value;
                 
+            case PropertyAssignment:
+                var obj = evaluate(node.object);
+                var value = evaluate(node.value);
+                setProperty(obj, node.property, value);
+                return value;
+                
             case FunctionCall:
                 if (node.object != null) {
                     // 方法调用 (object.method())
@@ -236,6 +362,55 @@ class Interpreter {
                 // trace("Defining function: " + node.name);
                 var func = new PythonFunction(node.name, node.parameters, node.body, this);
                 functions.set(node.name, func);
+                return null;
+                
+            case ClassDef:
+                // 创建一个简单的类对象
+                var classObj = {
+                    "__name__": node.name,
+                    "__superclass__": node.superclass,
+                    "__methods__": new Map<String, Dynamic>()
+                };
+                
+                // 执行类体来收集方法
+                pushScope();
+                var oldFunctions = functions;
+                functions = new Map<String, PythonFunction>();
+                
+                if (node.body != null) {
+                    evaluate(node.body);
+                }
+                
+                // 将收集到的函数作为类方法
+                var classMethods:Map<String, Dynamic> = classObj.__methods__;
+                for (methodName in functions.keys()) {
+                    classMethods.set(methodName, functions.get(methodName));
+                }
+                
+                functions = oldFunctions;
+                popScope();
+                
+                // 将类存储在变量中和函数中，这样可以像函数一样调用
+                setVariable(node.name, classObj);
+                
+                // 创建一个类构造函数
+                var constructor = new PythonFunction(node.name, [], null, this);
+                constructor.isClass = true;
+                constructor.classObj = classObj;
+                functions.set(node.name, constructor);
+                
+                return classObj;
+                
+                // 将类体中定义的函数作为方法添加到类中
+                for (funcName in functions.keys()) {
+                    var func = functions.get(funcName);
+                    Reflect.setField(classObj, funcName, func);
+                }
+                
+                popScope();
+                
+                // 将类设置为变量
+                setVariable(node.name, classObj);
                 return null;
                 
             case IfStatement:
@@ -302,6 +477,13 @@ class Interpreter {
             case ImportStatement:
                 // import module [as alias]
                 var module = moduleLoader.loadModule(node.module);
+                var varName = node.alias != null ? node.alias : node.module;
+                setVariable(varName, module);
+                return null;
+                
+            case HaxeImportStatement:
+                // haxe:import module [as alias]
+                var module = moduleLoader.loadModule(node.module, true);
                 var varName = node.alias != null ? node.alias : node.module;
                 setVariable(varName, module);
                 return null;
@@ -391,7 +573,7 @@ class Interpreter {
                 for (arg in args) {
                     values.push(evaluate(arg));
                 }
-                // trace(values.join(" "));
+                Sys.println(values.join(" "));
                 return null;
                 
             case "len":
@@ -514,11 +696,29 @@ class Interpreter {
             throw "Cannot access property '" + property + "' of null";
         }
         
+        // 首先检查对象的直接属性
         if (Reflect.hasField(obj, property)) {
             return Reflect.field(obj, property);
-        } else {
-            throw "Property '" + property + "' does not exist on object";
         }
+        
+        // 检查是否是类实例的方法
+        if (Reflect.hasField(obj, "__methods__")) {
+            var methods:Map<String, Dynamic> = obj.__methods__;
+            if (methods != null && methods.exists(property)) {
+                return methods.get(property);
+            }
+        }
+        
+        throw "Method '" + property + "' does not exist on object";
+    }
+    
+    private function setProperty(obj:Dynamic, property:String, value:Dynamic):Void {
+        if (obj == null) {
+            throw "Cannot set property '" + property + "' on null";
+        }
+        
+        // 直接设置属性
+        Reflect.setField(obj, property, value);
     }
     
     private function callMethod(obj:Dynamic, methodName:String, args:Array<ASTNode>):Dynamic {
@@ -561,6 +761,7 @@ class Interpreter {
             }
         }
         
+        // 首先检查对象的直接方法
         if (Reflect.hasField(obj, methodName)) {
             var method = Reflect.field(obj, methodName);
             if (Std.isOfType(method, PythonFunction)) {
@@ -572,9 +773,23 @@ class Interpreter {
             } else {
                 throw "'" + methodName + "' is not a method";
             }
-        } else {
-            throw "Method '" + methodName + "' does not exist on object";
         }
+        
+        // 检查是否是类实例的方法
+        if (Reflect.hasField(obj, "__methods__")) {
+            var methods:Map<String, Dynamic> = obj.__methods__;
+            if (methods != null && methods.exists(methodName)) {
+                var method = methods.get(methodName);
+                if (Std.isOfType(method, PythonFunction)) {
+                    var pythonFunc:PythonFunction = cast method;
+                    // 为方法调用添加self参数
+                    var methodArgs = [obj].concat(argValues);
+                    return pythonFunc.call(methodArgs);
+                }
+            }
+        }
+        
+        throw "Method '" + methodName + "' does not exist on object";
     }
     
     private function isTruthy(value:Dynamic):Bool {

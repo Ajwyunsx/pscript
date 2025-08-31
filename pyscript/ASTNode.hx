@@ -10,11 +10,14 @@ enum NodeType {
     // 语句
     ExpressionStatement;
     Assignment;
+    PropertyAssignment;
     FunctionDef;
+    ClassDef;
     ReturnStatement;
     GlobalStatement;
     ImportStatement;
     FromImportStatement;
+    HaxeImportStatement;
     IfStatement;
     WhileLoop;
     ForLoop;
@@ -42,8 +45,10 @@ class ASTNode {
     public var type:NodeType;
     
     // 通用属性
+    // 通用属性
     public var value:Dynamic;
     public var name:String;
+    public var superclass:String;
     
     // 语句列表
     public var statements:Array<ASTNode>;

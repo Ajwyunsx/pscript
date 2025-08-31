@@ -85,8 +85,9 @@ enum TokenType {
     DEDENT;
     EOF;
     
-    // LScript兼容语法
+    // 特殊导入语法
     SCRIPT_IMPORT;   // script:import
+    HAXE_IMPORT;     // haxe:import
 }
 
 /**
