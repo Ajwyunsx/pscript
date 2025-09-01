@@ -1,4 +1,4 @@
-# PyScript - Python Syntax Interpreter for Haxe
+# PScript - Python Syntax Interpreter for Haxe
 
 PyScript is a Python syntax interpreter written in Haxe that supports intelligent Haxe module imports, complete Python class system, and function support.
 
