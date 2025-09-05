@@ -102,6 +102,15 @@ class PScript {
             // Check if it contains Haxe method calls or hex numbers
             if (containsHaxeSyntax(stringValue)) {
                 var convertedValue = SimpleHaxeConverter.convertHaxeToPython(stringValue);
+                
+                // 特殊处理十六进制数值，将其转换为整数
+                if (~/^0x([0-9a-fA-F]+)$/.match(convertedValue)) {
+                    var hexValue = convertedValue.substr(2);
+                    var intValue = Std.parseInt("0x" + hexValue);
+                    interpreter.setVariable(name, intValue);
+                    return;
+                }
+                
                 interpreter.setVariable(name, convertedValue);
                 return;
             }
@@ -303,23 +312,34 @@ class PScript {
                 }
             } else {
                 // Build function call code
-                var argsStr = "";
-                try {
-                    var argsLength:Int = args.length;
-                    for (i in 0...argsLength) {
-                        if (i > 0) argsStr += ", ";
-                        // Set parameters to temporary variables
-                        var argName = "__arg" + i;
-                        interpreter.setVariable(argName, args[i]);
-                        argsStr += argName;
+            var argsStr = "";
+            try {
+                var argsLength:Int = args.length;
+                for (i in 0...argsLength) {
+                    if (i > 0) argsStr += ", ";
+                    // Set parameters to temporary variables
+                    var argName = "__arg" + i;
+                    
+                    // 特殊处理十六进制参数
+                    var argValue = args[i];
+                    if (Std.isOfType(argValue, String)) {
+                        var strValue:String = cast argValue;
+                        if (pyscript.utils.HexConverter.isHexValue(strValue)) {
+                            // 将十六进制字符串转换为整数
+                            argValue = pyscript.utils.HexConverter.hexToInt(strValue);
+                        }
                     }
-                } catch (e:Dynamic) {
-                    if (onError != null) {
-                        onError("Python error: Invalid field access : length (args)");
-                    } else {
-                        trace("Python error: Invalid field access : length (args)");
-                    }
+                    
+                    interpreter.setVariable(argName, argValue);
+                    argsStr += argName;
                 }
+            } catch (e:Dynamic) {
+                if (onError != null) {
+                    onError("Python error: Invalid field access : length (args)");
+                } else {
+                    trace("Python error: Invalid field access : length (args)");
+                }
+            }
                 
                 callCode = "__result = " + funcName + "(" + argsStr + ")";
                 // Cache call code

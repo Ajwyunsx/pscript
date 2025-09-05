@@ -421,6 +421,19 @@ class HaxeSyntaxConverter {
             result = hexPattern.replace(result, replacement);
         }
         
+        // 特殊处理：确保十六进制数值在方法调用中作为整数传递
+        // 例如：game.camGame.flash(0xffffff, 1) 中的 0xffffff 需要转换为整数
+        var methodCallPattern = ~/\.([a-zA-Z]+)\s*\(([^)]*)\)/g;
+        result = methodCallPattern.replace(result, function(re:EReg):String {
+            var methodName = re.matched(1);
+            var args = re.matched(2);
+            
+            // 处理参数，将十六进制数值转换为整数
+            var processedArgs = processMethodArgumentsWithTypeConversion(args);
+            
+            return "." + methodName + "(" + processedArgs + ")";
+        });
+        
         return result;
     }
     
@@ -470,6 +483,48 @@ class HaxeSyntaxConverter {
             // 处理十六进制数值
             if (~/^0x[0-9a-fA-F]+$/.match(arg)) {
                 processedArgs.push(arg.toUpperCase());
+            }
+            // 处理浮点数
+            else if (~/^\d+\.\d+$/.match(arg)) {
+                processedArgs.push(arg);
+            }
+            // 处理整数
+            else if (~/^\d+$/.match(arg)) {
+                processedArgs.push(arg);
+            }
+            // 处理字符串
+            else if (~/^["'].*["']$/.match(arg)) {
+                processedArgs.push(arg);
+            }
+            // 处理变量名或表达式
+            else {
+                processedArgs.push(arg);
+            }
+        }
+        
+        return processedArgs.join(", ");
+    }
+    
+    /**
+     * 处理方法参数并进行类型转换
+     * 特别处理十六进制数值，确保它们在Python中作为整数正确传递
+     */
+    private static function processMethodArgumentsWithTypeConversion(args:String):String {
+        if (args == null || StringTools.trim(args) == "") {
+            return "";
+        }
+        
+        var argList = args.split(",");
+        var processedArgs = [];
+        
+        for (arg in argList) {
+            arg = StringTools.trim(arg);
+            
+            // 处理十六进制数值，转换为整数
+            if (~/^0x([0-9a-fA-F]+)$/.match(arg)) {
+                var hexValue = arg.substr(2); // 移除0x前缀
+                var intValue = Std.parseInt("0x" + hexValue);
+                processedArgs.push(Std.string(intValue));
             }
             // 处理浮点数
             else if (~/^\d+\.\d+$/.match(arg)) {

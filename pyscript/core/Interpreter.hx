@@ -322,6 +322,8 @@ class Interpreter {
         globals.set("bool", "__builtin__");
         globals.set("list", "__builtin__");
         globals.set("dict", "__builtin__");
+        globals.set("tuple", "__builtin__");
+        globals.set("set", "__builtin__");
         globals.set("range", "__builtin__");
         
         // Additional built-in functions
@@ -340,6 +342,20 @@ class Interpreter {
         globals.set("bin", "__builtin__");
         globals.set("super", "__builtin__");
         
+        // Numeric conversion functions
+        globals.set("complex", "__builtin__");
+        
+        // Byte conversion functions
+        globals.set("bytes", "__builtin__");
+        globals.set("bytearray", "__builtin__");
+        globals.set("memoryview", "__builtin__");
+        
+        // Other conversion functions
+        globals.set("ascii", "__builtin__");
+        globals.set("repr", "__builtin__");
+        globals.set("format", "__builtin__");
+        globals.set("frozenset", "__builtin__");
+        
         // 标记所有内置变量为明确定义
         markBuiltinsAsExplicitlyDefined();
     }
@@ -350,9 +366,11 @@ class Interpreter {
     private function markBuiltinsAsExplicitlyDefined():Void {
         var builtinNames = [
             "True", "False", "None",
-            "print", "len", "str", "int", "float", "bool", "list", "dict", "range",
+            "print", "len", "str", "int", "float", "bool", "list", "dict", "tuple", "set", "range",
             "sum", "max", "min", "abs", "round", "pow", "type", "isinstance",
-            "chr", "ord", "hex", "oct", "bin", "super"
+            "chr", "ord", "hex", "oct", "bin", "super",
+            "complex", "bytes", "bytearray", "memoryview",
+            "ascii", "repr", "format", "frozenset"
         ];
         
         for (name in builtinNames) {
@@ -605,7 +623,7 @@ class Interpreter {
         var value = evaluate(node.value);
         
         // 检查对象是否为null
-        if (obj == null) {
+        if (Reflect.compareMethods(obj, null)) {
             // 检查是否是因为访问未定义变量导致的
             if (node.object.type == NodeType.Identifier) {
                 var varName = node.object.name;
@@ -1020,21 +1038,21 @@ class Interpreter {
             } else if (Std.isOfType(func, BoundMethod)) {
                 // 对于绑定方法
                 return cast(func, BoundMethod).call(this, args);
-            } else if (func != null && Reflect.hasField(func, "__haxeClass")) {
+            } else if (!Reflect.compareMethods(func, null) && Reflect.hasField(func, "__haxeClass")) {
                 // 对于Haxe类包装器
                 try {
                     return Reflect.callMethod(func, Reflect.field(func, "__call"), [args]);
                 } catch (e:Dynamic) {
                     throw "Haxe class construction failed: " + e;
                 }
-            } else if (func != null && Reflect.isFunction(func)) {
+            } else if (!Reflect.compareMethods(func, null) && Reflect.isFunction(func)) {
                 // 对于Haxe函数或闭包
                 try {
                     return Reflect.callMethod(null, func, args);
                 } catch (e:Dynamic) {
                     throw "Function call failed: " + e;
                 }
-            } else if (func != null && isHaxeObject(func)) {
+            } else if (!Reflect.compareMethods(func, null) && isHaxeObject(func)) {
                 // 对于Haxe对象，尝试将其作为函数调用
                 try {
                     if (Reflect.isFunction(func)) {
@@ -1045,6 +1063,20 @@ class Interpreter {
                     }
                 } catch (e:Dynamic) {
                     throw "Haxe object call failed: " + e;
+                }
+            } else if (!Reflect.compareMethods(func, null) && Reflect.isObject(func) && !Reflect.hasField(func, "__haxeClass")) {
+                // 对于动态公开函数，尝试直接调用
+                try {
+                    // 检查是否有call方法
+                    if (Reflect.hasField(func, "call") && Reflect.isFunction(Reflect.field(func, "call"))) {
+                        return Reflect.callMethod(func, Reflect.field(func, "call"), args);
+                    }
+                    // 如果没有call方法，尝试直接作为函数调用
+                    else if (Reflect.isFunction(func)) {
+                        return Reflect.callMethod(null, func, args);
+                    }
+                } catch (e:Dynamic) {
+                    throw "Dynamic function call failed: " + e;
                 }
             } else {
                 // 不支持的函数类型，静默返回
@@ -1114,7 +1146,25 @@ class Interpreter {
         // 检查是否是Haxe对象
         if (isHaxeObject(obj)) {
             var value = getHaxeObjectProperty(obj, attr);
-            if (value != null) {
+            if (!Reflect.compareMethods(value, null)) {
+                // 如果是函数，返回绑定版本
+                if (Reflect.isFunction(value)) {
+                    return function(?args:Array<Dynamic>) {
+                        if (Reflect.compareMethods(args, null)) args = [];
+                        return Reflect.callMethod(obj, value, args);
+                    };
+                }
+                return value;
+            } else {
+                // 属性不存在，返回null而不是抛出异常
+                return null;
+            }
+        }
+        
+        // 检查是否是动态公开函数
+        if (Reflect.isObject(obj) && !Reflect.hasField(obj, "__haxeClass")) {
+            var value = getHaxeObjectProperty(obj, attr);
+            if (!Reflect.compareMethods(value, null)) {
                 // 如果是函数，返回绑定版本
                 if (Reflect.isFunction(value)) {
                     return function(?args:Array<Dynamic>) {
@@ -1147,7 +1197,7 @@ class Interpreter {
                 var interpreter = this;
                 return function(?args:Array<Dynamic>) {
                     var allArgs:Array<Dynamic> = [];
-                    if (args != null) {
+                    if (!Reflect.compareMethods(args, null)) {
                         allArgs = allArgs.concat(args);
                     }
                     // 对于实例方法，需要interpreter参数
@@ -2524,13 +2574,23 @@ class Interpreter {
     private function type(args:Array<Dynamic>):Dynamic {
         if (args.length != 1) throw "type() takes exactly 1 argument";
         var obj = args[0];
-        if (Std.isOfType(obj, String)) return "<class 'str'>";
-        if (Std.isOfType(obj, Int)) return "<class 'int'>";
-        if (Std.isOfType(obj, Float)) return "<class 'float'>";
-        if (Std.isOfType(obj, Bool)) return "<class 'bool'>";
-        if (Reflect.hasField(obj, "length") && Reflect.isFunction(obj.push)) return "<class 'list'>";
-        if (Reflect.hasField(obj, "keys") && Reflect.hasField(obj, "get")) return "<class 'dict'>";
-        return "<class 'object'>";
+        var typeName = pyscript.utils.HaxeTypeUtils.getTypeName(obj);
+        
+        // 转换为Python风格的类型名称
+        switch (typeName) {
+            case "Int": return "<class 'int'>";
+            case "Float": return "<class 'float'>";
+            case "Bool": return "<class 'bool'>";
+            case "String": return "<class 'str'>";
+            case "Array": return "<class 'list'>";
+            case "null": return "<class 'NoneType'>";
+            default:
+                // 检查是否是字典类型
+                if (Reflect.hasField(obj, "keys") && Reflect.hasField(obj, "get")) {
+                    return "<class 'dict'>";
+                }
+                return "<class 'object'>";
+        }
     }
     
     private function isinstance(args:Array<Dynamic>):Dynamic {
@@ -2568,25 +2628,257 @@ class Interpreter {
     private function hex(args:Array<Dynamic>):Dynamic {
         if (args.length != 1) throw "hex() takes exactly 1 argument";
         var i = Std.int(args[0]);
-        return "0x" + StringTools.hex(i);
+        return pyscript.utils.HexConverter.intToHex(i);
     }
     
     private function oct(args:Array<Dynamic>):Dynamic {
         if (args.length != 1) throw "oct() takes exactly 1 argument";
         var i = Std.int(args[0]);
-        return "0o" + StringTools.hex(i, 8);
+        return "0o" + pyscript.utils.HexConverter.intToOctal(i);
     }
     
     private function bin(args:Array<Dynamic>):Dynamic {
         if (args.length != 1) throw "bin() takes exactly 1 argument";
         var i = Std.int(args[0]);
-        var binStr = "";
-        while (i > 0) {
-            binStr = (i & 1) + binStr;
-            i >>= 1;
-        }
-        return binStr == "" ? "0b0" : "0b" + binStr;
+        return "0b" + pyscript.utils.HexConverter.intToBinary(i);
     }
+    
+    private function tuple(args:Array<Dynamic>):Dynamic {
+        if (args.length == 0) return new Array<Dynamic>();
+        if (args.length == 1) {
+            var obj = args[0];
+            if (isArray(obj)) {
+                // 返回数组的副本作为元组
+                return asArray(obj).copy();
+            } else if (Std.isOfType(obj, String)) {
+                // 将字符串转换为字符数组作为元组
+                var result = new Array<Dynamic>();
+                var str = cast(obj, String);
+                for (i in 0...str.length) {
+                    result.push(str.charAt(i));
+                }
+                return result;
+            }
+        }
+        throw "tuple() takes at most 1 argument";
+    }
+    
+    private function set(args:Array<Dynamic>):Dynamic {
+        if (args.length == 0) return new Map<Dynamic, Bool>();
+        if (args.length == 1) {
+            var obj = args[0];
+            var result = new Map<Dynamic, Bool>();
+            if (isArray(obj)) {
+                // 将数组转换为集合
+                var arr = asArray(obj);
+                for (item in arr) {
+                    result.set(item, true);
+                }
+                return result;
+            } else if (Std.isOfType(obj, String)) {
+                // 将字符串转换为字符集合
+                var str = cast(obj, String);
+                for (i in 0...str.length) {
+                    result.set(str.charAt(i), true);
+                }
+                return result;
+            }
+        }
+        throw "set() takes at most 1 argument";
+    }
+    
+    private function complex(args:Array<Dynamic>):Dynamic {
+        if (args.length == 0) return {real: 0, imag: 0};
+        if (args.length == 1) {
+            var real = toNumber(args[0]);
+            return {real: real, imag: 0};
+        } else if (args.length == 2) {
+            var real = toNumber(args[0]);
+            var imag = toNumber(args[1]);
+            return {real: real, imag: imag};
+        }
+        throw "complex() takes at most 2 arguments";
+    }
+    
+    private function bytes(args:Array<Dynamic>):Dynamic {
+        if (args.length == 0) return haxe.io.Bytes.alloc(0);
+        if (args.length == 1) {
+            var obj = args[0];
+            if (Std.isOfType(obj, String)) {
+                var str = cast(obj, String);
+                return haxe.io.Bytes.ofString(str);
+            } else if (Std.isOfType(obj, Int)) {
+                var size = Std.int(obj);
+                var data = new haxe.io.BytesData();
+                for (i in 0...size) {
+                    data.push(0);
+                }
+                return haxe.io.Bytes.ofData(data);
+            } else if (isArray(obj)) {
+                var arr = asArray(obj);
+                var data = new haxe.io.BytesData();
+                for (item in arr) {
+                    data.push(Std.int(item));
+                }
+                return haxe.io.Bytes.ofData(data);
+            }
+        } else if (args.length == 2) {
+            var obj = args[0];
+            var encoding = Std.string(args[1]);
+            if (Std.isOfType(obj, String)) {
+                var str = cast(obj, String);
+                return haxe.io.Bytes.ofString(str);
+            }
+        }
+        throw "bytes() takes at most 2 arguments";
+    }
+    
+    private function bytearray(args:Array<Dynamic>):Dynamic {
+        // 在Haxe中，bytearray和bytes使用相同的实现
+        if (args.length == 0) return haxe.io.Bytes.alloc(0);
+        if (args.length == 1) {
+            var obj = args[0];
+            if (Std.isOfType(obj, String)) {
+                var str = cast(obj, String);
+                return haxe.io.Bytes.ofString(str);
+            } else if (Std.isOfType(obj, Int)) {
+                var size = Std.int(obj);
+                var data = new haxe.io.BytesData();
+                for (i in 0...size) {
+                    data.push(0);
+                }
+                return haxe.io.Bytes.ofData(data);
+            } else if (isArray(obj)) {
+                var arr = asArray(obj);
+                var data = new haxe.io.BytesData();
+                for (item in arr) {
+                    data.push(Std.int(item));
+                }
+                return haxe.io.Bytes.ofData(data);
+            }
+        } else if (args.length == 2) {
+            var obj = args[0];
+            var encoding = Std.string(args[1]);
+            if (Std.isOfType(obj, String)) {
+                var str = cast(obj, String);
+                return haxe.io.Bytes.ofString(str);
+            }
+        }
+        throw "bytearray() takes at most 2 arguments";
+    }
+    
+    private function memoryview(args:Array<Dynamic>):Dynamic {
+        // 在Haxe中，memoryview返回对bytes对象的引用
+        if (args.length != 1) throw "memoryview() takes exactly 1 argument";
+        var obj = args[0];
+        if (Std.isOfType(obj, haxe.io.Bytes)) {
+            return obj;
+        }
+        throw "memoryview() argument must be a bytes-like object";
+    }
+    
+    private function ascii(args:Array<Dynamic>):Dynamic {
+        if (args.length != 1) throw "ascii() takes exactly 1 argument";
+        var obj = args[0];
+        var str = Std.string(obj);
+        var result = "";
+        
+        for (i in 0...str.length) {
+            var charCode = str.charCodeAt(i);
+            if (charCode < 128) {
+                result += str.charAt(i);
+            } else {
+                // 非ASCII字符替换为转义序列
+                result += "\\x" + StringTools.hex(charCode, 2);
+            }
+        }
+        
+        return result;
+    }
+    
+    private function repr(args:Array<Dynamic>):Dynamic {
+        if (args.length != 1) throw "repr() takes exactly 1 argument";
+        var obj = args[0];
+        
+        if (Std.isOfType(obj, String)) {
+            var str = cast(obj, String);
+            return "'" + str + "'";
+        } else if (Std.isOfType(obj, Int) || Std.isOfType(obj, Float)) {
+            return Std.string(obj);
+        } else if (Std.isOfType(obj, Bool)) {
+            return obj ? "True" : "False";
+        } else if (Reflect.compareMethods(obj, null)) {
+            return "None";
+        } else if (isArray(obj)) {
+            var arr = asArray(obj);
+            var result = "[";
+            for (i in 0...arr.length) {
+                if (i > 0) result += ", ";
+                result += Std.string(repr([arr[i]]));
+            }
+            result += "]";
+            return result;
+        } else if (Reflect.hasField(obj, "toString")) {
+            return "<object " + Std.string(obj) + ">";
+        }
+        
+        return "<object>";
+    }
+    
+    private function format(args:Array<Dynamic>):Dynamic {
+        if (args.length == 0) throw "format() requires at least 1 argument";
+        if (args.length == 1) return Std.string(args[0]);
+        
+        var value = args[0];
+        var formatSpec = Std.string(args[1]);
+        
+        // 简单的格式化实现
+        if (Std.isOfType(value, Float)) {
+            var num = cast(value, Float);
+            if (formatSpec.indexOf(".") != -1) {
+                // 处理精度格式，如 ".2f"
+                var parts = formatSpec.split(".");
+                if (parts.length > 1) {
+                    var precision = Std.parseInt(parts[1]);
+                    if (!Math.isNaN(precision)) {
+                        return Std.string(Math.round(num * Math.pow(10, precision)) / Math.pow(10, precision));
+                    }
+                }
+            }
+        }
+        
+        // 默认情况下，返回值的字符串表示
+        return Std.string(value);
+    }
+    
+    private function frozenset(args:Array<Dynamic>):Dynamic {
+        // 在Haxe中，frozenset和set使用相同的实现
+        if (args.length == 0) return new Map<Dynamic, Bool>();
+        if (args.length == 1) {
+            var obj = args[0];
+            var result = new Map<Dynamic, Bool>();
+            if (isArray(obj)) {
+                // 将数组转换为不可变集合
+                var arr = asArray(obj);
+                for (item in arr) {
+                    result.set(item, true);
+                }
+                return result;
+            } else if (Std.isOfType(obj, String)) {
+                // 将字符串转换为字符不可变集合
+                var str = cast(obj, String);
+                for (i in 0...str.length) {
+                    result.set(str.charAt(i), true);
+                }
+                return result;
+            }
+        }
+        throw "frozenset() takes at most 1 argument";
+    }
+    
+
+    
+
     
     private function superFunc(args:Array<Dynamic>):Dynamic {
         // super() 应该在方法内部调用，第一个参数是类型或对象
